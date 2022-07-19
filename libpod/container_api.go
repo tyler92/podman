@@ -667,7 +667,24 @@ func (c *Container) WaitForConditionWithInterval(ctx context.Context, waitTimeou
 // It also cleans up the network stack
 func (c *Container) Cleanup(ctx context.Context) error {
 	if !c.batched {
+		// We need to lock the pod before we lock the container.
+		// To avoid races around cleaning up a container and the pod it is in.
+		if c.config.Pod != "" {
+			pod, err := c.runtime.state.Pod(c.config.Pod)
+			if err != nil {
+				return errors.Wrapf(err, "container %s is in pod %s, but pod cannot be retrieved", c.ID(), pod.ID())
+			}
+
+			// Lock the pod while we're cleaning up container
+			if pod.config.LockID == c.config.LockID {
+				return errors.Wrapf(define.ErrWillDeadlock, "container %s and pod %s share lock ID %d", c.ID(), pod.ID(), c.config.LockID)
+			}
+			pod.lock.Lock()
+			defer pod.lock.Unlock()
+		}
+
 		c.lock.Lock()
+
 		defer c.lock.Unlock()
 
 		if err := c.syncContainer(); err != nil {
